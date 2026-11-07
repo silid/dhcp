@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"sort"
 	"strings"
 
 	"github.com/insomniacslk/dhcp/iana"
@@ -48,12 +47,15 @@ func (o Option) String() string {
 }
 
 // Options is a collection of options.
-type Options map[uint8][]byte
+type Options struct {
+	values map[uint8][]byte
+	order  []uint8
+}
 
-// OptionsFromList adds all given options to an options map.
-func OptionsFromList(o ...Option) Options {
-	opts := make(Options)
-	for _, opt := range o {
+// OptionsFromList adds the given options in order.
+func OptionsFromList(options ...Option) Options {
+	var opts Options
+	for _, opt := range options {
 		opts.Update(opt)
 	}
 	return opts
@@ -67,24 +69,62 @@ func OptionsFromList(o ...Option) Options {
 // concatenated, and hence this should always just return one option. This
 // currently returns a list to be API compatible.
 func (o Options) Get(code OptionCode) []byte {
-	return o[code.Code()]
+	return o.values[code.Code()]
 }
 
 // Has checks whether o has the given opcode.
 func (o Options) Has(opcode OptionCode) bool {
-	_, ok := o[opcode.Code()]
+	_, ok := o.values[opcode.Code()]
 	return ok
 }
 
+// Len returns the number of stored option codes.
+func (o Options) Len() int {
+	return len(o.values)
+}
+
+// ToList returns the options in the order they were added or parsed.
+func (o Options) ToList() []Option {
+	options := make([]Option, 0, len(o.order))
+	for _, code := range o.order {
+		data := append([]byte(nil), o.values[code]...)
+		options = append(options, OptGeneric(optionCode(code), data))
+	}
+	return options
+}
+
 // Del deletes the option matching the option code.
-func (o Options) Del(opcode OptionCode) {
-	delete(o, opcode.Code())
+func (o *Options) Del(opcode OptionCode) {
+	key := opcode.Code()
+	if o.values == nil {
+		return
+	}
+
+	if _, exists := o.values[key]; !exists {
+		return
+	}
+
+	delete(o.values, key)
+	for i, orderedCode := range o.order {
+		if orderedCode == key {
+			o.order = append(o.order[:i], o.order[i+1:]...)
+			break
+		}
+	}
 }
 
 // Update updates the existing options with the passed option, adding it
 // at the end if not present already
-func (o Options) Update(option Option) {
-	o[option.Code.Code()] = option.Value.ToBytes()
+func (o *Options) Update(option Option) {
+	if o.values == nil {
+		o.values = make(map[uint8][]byte)
+	}
+
+	code := option.Code.Code()
+	if _, exists := o.values[code]; !exists {
+		o.order = append(o.order, code)
+	}
+	o.values[code] = option.Value.ToBytes()
 }
 
 // ToBytes makes Options usable as an OptionValue as well.
@@ -100,7 +140,7 @@ func (o Options) ToBytes() []byte {
 // The sequence should not contain the DHCP magic cookie.
 //
 // Returns an error if any invalid option or length is found.
-func (o Options) FromBytes(data []byte) error {
+func (o *Options) FromBytes(data []byte) error {
 	return o.fromBytesCheckEnd(data, false)
 }
 
@@ -112,7 +152,7 @@ const (
 
 // FromBytesCheckEnd parses Options from byte sequences using the
 // parsing function that is passed in as a paremeter
-func (o Options) fromBytesCheckEnd(data []byte, checkEndOption bool) error {
+func (o *Options) fromBytesCheckEnd(data []byte, checkEndOption bool) error {
 	if len(data) == 0 {
 		return nil
 	}
@@ -147,7 +187,13 @@ func (o Options) fromBytesCheckEnd(data []byte, checkEndOption bool) error {
 		//
 		// See also RFC 3396 for concatenation order and options longer
 		// than 255 bytes.
-		o[code] = append(o[code], data...)
+		if o.values == nil {
+			o.values = make(map[uint8][]byte)
+		}
+		if _, exists := o.values[code]; !exists {
+			o.order = append(o.order, code)
+		}
+		o.values[code] = append(o.values[code], data...)
 	}
 
 	// If we never read the End option, the sender of this packet screwed
@@ -159,40 +205,9 @@ func (o Options) fromBytesCheckEnd(data []byte, checkEndOption bool) error {
 	return nil
 }
 
-// sortedKeys returns an ordered slice of option keys from the Options map, for
-// use in serializing options to binary.
-func (o Options) sortedKeys() []int {
-	// Send all values for a given key
-	var codes []int
-	var hasOptAgentInfo, hasOptEnd bool
-	for k := range o {
-		// RFC 3046 section 2.1 states that option 82 SHALL come last (ignoring End).
-		if k == optAgentInfo {
-			hasOptAgentInfo = true
-			continue
-		}
-		if k == optEnd {
-			hasOptEnd = true
-			continue
-		}
-		codes = append(codes, int(k))
-	}
-
-	sort.Ints(codes)
-
-	if hasOptAgentInfo {
-		codes = append(codes, optAgentInfo)
-	}
-	if hasOptEnd {
-		codes = append(codes, optEnd)
-	}
-	return codes
-}
-
 // Marshal writes options binary representations to b.
 func (o Options) Marshal(b *uio.Lexer) {
-	for _, c := range o.sortedKeys() {
-		code := uint8(c)
+	for _, code := range o.order {
 		// Even if the End option is in there, don't marshal it until
 		// the end.
 		// Don't write padding either, since the options are sorted
@@ -201,7 +216,7 @@ func (o Options) Marshal(b *uio.Lexer) {
 			continue
 		}
 
-		data := o[code]
+		data := o.values[code]
 
 		// Ensure even 0-length options are written out
 		if len(data) == 0 {
@@ -279,9 +294,8 @@ var dhcpHumanizer = OptionHumanizer{
 // ToString uses parse to parse options into human-readable values.
 func (o Options) ToString(humanizer OptionHumanizer) string {
 	var ret string
-	for _, c := range o.sortedKeys() {
-		code := uint8(c)
-		v := o[code]
+	for _, code := range o.order {
+		v := o.values[code]
 		optString := humanizer.Stringify(code, v)
 		// If this option has sub structures, offset them accordingly.
 		if strings.Contains(optString, "\n") {

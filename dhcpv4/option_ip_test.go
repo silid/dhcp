@@ -17,19 +17,31 @@ func TestOptBroadcastAddress(t *testing.T) {
 }
 
 func TestGetIPs(t *testing.T) {
-	o := Options{102: []byte{}}
+	o := Options{
+		values: map[uint8][]byte{102: []byte{}},
+		order:  []uint8{102},
+	}
 	i := GetIPs(optionCode(102), o)
 	require.Nil(t, i)
 
-	o = Options{102: []byte{192, 168, 0}}
+	o = Options{
+		values: map[uint8][]byte{102: []byte{192, 168, 0}},
+		order:  []uint8{102},
+	}
 	i = GetIPs(optionCode(102), o)
 	require.Nil(t, i)
 
-	o = Options{102: []byte{192, 168, 0, 1}}
+	o = Options{
+		values: map[uint8][]byte{102: []byte{192, 168, 0, 1}},
+		order:  []uint8{102},
+	}
 	i = GetIPs(optionCode(102), o)
 	require.Equal(t, i, []net.IP{{192, 168, 0, 1}})
 
-	o = Options{102: []byte{192, 168, 0, 1, 192, 168, 0, 2}}
+	o = Options{
+		values: map[uint8][]byte{102: []byte{192, 168, 0, 1, 192, 168, 0, 2}},
+		order:  []uint8{102},
+	}
 	i = GetIPs(optionCode(102), o)
 	require.Equal(t, i, []net.IP{{192, 168, 0, 1}, {192, 168, 0, 2}})
 }

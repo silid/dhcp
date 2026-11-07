@@ -166,12 +166,13 @@ func TestOptionsMarshal(t *testing.T) {
 		want []byte
 	}{
 		{
-			opts: nil,
+			opts: Options{},
 			want: nil,
 		},
 		{
 			opts: Options{
-				5: []byte{1, 2, 3, 4},
+				values: map[uint8][]byte{5: {1, 2, 3, 4}},
+				order:  []uint8{5},
 			},
 			want: []byte{
 				5 /* key */, 4 /* length */, 1, 2, 3, 4,
@@ -181,10 +182,13 @@ func TestOptionsMarshal(t *testing.T) {
 			// Test sorted key order.
 			// RFC 3046 section 2.1 states that option 82 SHALL come last.
 			opts: Options{
-				5:   []byte{1, 2, 3},
-				82:  []byte{201, 202, 203},
-				100: []byte{101, 102, 103},
-				255: []byte{},
+				values: map[uint8][]byte{
+					5:   []byte{1, 2, 3},
+					82:  []byte{201, 202, 203},
+					100: []byte{101, 102, 103},
+					255: []byte{},
+				},
+				order: []uint8{5, 100, 82, 255},
 			},
 			want: []byte{
 				5, 3, 1, 2, 3,
@@ -195,7 +199,10 @@ func TestOptionsMarshal(t *testing.T) {
 		{
 			// Test RFC 3396.
 			opts: Options{
-				5: bytes.Repeat([]byte{10}, math.MaxUint8+1),
+				values: map[uint8][]byte{
+					5: bytes.Repeat([]byte{10}, math.MaxUint8+1),
+				},
+				order: []uint8{5},
 			},
 			want: append(append(
 				[]byte{5, math.MaxUint8}, bytes.Repeat([]byte{10}, math.MaxUint8)...),
@@ -205,7 +212,10 @@ func TestOptionsMarshal(t *testing.T) {
 		{
 			// Test 0-length options
 			opts: Options{
-				80: []byte{},
+				values: map[uint8][]byte{
+					80: []byte{},
+				},
+				order: []uint8{80},
 			},
 			want: []byte{80, 0},
 		},
@@ -213,8 +223,11 @@ func TestOptionsMarshal(t *testing.T) {
 			// Test special options, handled by the message marshalling code
 			// and ignored by the options marshalling code
 			opts: Options{
-				0:   []byte{}, // Padding
-				255: []byte{}, // End of options
+				values: map[uint8][]byte{
+					0:   []byte{}, // Padding
+					255: []byte{}, // End of options
+				},
+				order: []uint8{0, 255},
 			},
 			want: nil, // not written out
 		},
@@ -223,6 +236,21 @@ func TestOptionsMarshal(t *testing.T) {
 			require.Equal(t, tt.want, uio.ToBigEndian(tt.opts))
 		})
 	}
+}
+
+func TestOptionsToListPreservesOrder(t *testing.T) {
+	opts := OptionsFromList(
+		OptGeneric(GenericOptionCode(10), []byte{1}),
+		OptGeneric(GenericOptionCode(3), []byte{2}),
+		OptGeneric(GenericOptionCode(10), []byte{3}),
+	)
+
+	got := opts.ToList()
+	require.Len(t, got, 2)
+	require.Equal(t, uint8(10), got[0].Code.Code())
+	require.Equal(t, []byte{3}, got[0].Value.ToBytes())
+	require.Equal(t, uint8(3), got[1].Code.Code())
+	require.Equal(t, []byte{2}, got[1].Value.ToBytes())
 }
 
 func TestOptionsUnmarshal(t *testing.T) {
@@ -269,7 +297,10 @@ func TestOptionsUnmarshal(t *testing.T) {
 				byte(OptionEnd),
 			},
 			want: Options{
-				3: []byte{5, 6},
+				values: map[uint8][]byte{
+					3: []byte{5, 6},
+				},
+				order: []uint8{3},
 			},
 		},
 		{
@@ -280,7 +311,10 @@ func TestOptionsUnmarshal(t *testing.T) {
 				byte(OptionEnd),
 			),
 			want: Options{
-				3: bytes.Repeat([]byte{10}, math.MaxUint8+5),
+				values: map[uint8][]byte{
+					3: bytes.Repeat([]byte{10}, math.MaxUint8+5),
+				},
+				order: []uint8{3},
 			},
 		},
 		{
@@ -290,8 +324,11 @@ func TestOptionsUnmarshal(t *testing.T) {
 				byte(OptionEnd),
 			},
 			want: Options{
-				10: []byte{255, 254},
-				11: []byte{5, 5, 5},
+				values: map[uint8][]byte{
+					10: []byte{255, 254},
+					11: []byte{5, 5, 5},
+				},
+				order: []uint8{10, 11},
 			},
 		},
 		{
@@ -300,12 +337,15 @@ func TestOptionsUnmarshal(t *testing.T) {
 				byte(OptionEnd),
 			),
 			want: Options{
-				10: []byte{255, 254},
+				values: map[uint8][]byte{
+					10: []byte{255, 254},
+				},
+				order: []uint8{10},
 			},
 		},
 	} {
 		t.Run(fmt.Sprintf("Test %02d", i), func(t *testing.T) {
-			opt := make(Options)
+			opt := Options{}
 			err := opt.fromBytesCheckEnd(tt.input, true)
 			if tt.wantError {
 				require.Error(t, err)
